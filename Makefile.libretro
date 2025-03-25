@@ -1,0 +1,120 @@
+NAME := tanuki3ds_libretro
+BUILD_DIR := build-libretro
+SRC_DIR := src
+
+ifeq ($(OS),Windows_NT)
+	CC := clang
+	CXX := clang++
+else ifeq ($(shell uname),Darwin)
+	CC := $(shell brew --prefix)/opt/llvm/bin/clang
+	CXX := $(shell brew --prefix)/opt/llvm/bin/clang++
+else
+	CC := clang
+	CXX := clang++
+endif
+
+CSTD := -std=gnu23
+CXXSTD := -std=gnu++23
+CFLAGS := -Wall -Wimplicit-fallthrough -Wno-format -Werror -fPIC
+CFLAGS_RELEASE := -O3
+CFLAGS_DEBUG := -g -fsanitize=address
+
+CPPFLAGS := -MP -MMD -D_GNU_SOURCE -isystem /usr/local/include -Isrc --embed-dir=sys_files -fPIC
+
+LIBDIRS := /usr/local/lib
+
+LIBS := -lSDL3 -lfdk-aac
+
+ifeq ($(shell uname),Darwin)
+	CPPFLAGS += -isystem $(shell brew --prefix)/include
+	LIBDIRS := $(shell brew --prefix)/lib $(LIBDIRS)
+else ifeq ($(OS),Windows_NT)
+	LIBDIRS += /mingw32/lib /mingw64/lib
+	# we need all this garbage to static link on windows
+	LIBS += -lntdll -lkernel32 -lmsvcrt -ladvapi32 -lbcrypt -lrpcrt4 -lgdi32 -lucrtbase -luser32 -limm32 -lole32 -loleaut32 -lsetupapi -lshell32 -lversion -lwinmm -lcfgmgr32 -lcryptbase -lbcryptprimitives -luuid
+endif
+
+ifeq ($(USER), 1)
+	CFLAGS_RELEASE += -flto
+	CPPFLAGS += -DREDIRECTSTDOUT -DNOCAPSTONE
+else
+	CFLAGS_RELEASE += -g
+	LIBS += -lcapstone
+endif
+
+ifeq ($(shell getconf PAGESIZE),4096)
+	CPPFLAGS += -DFASTMEM -DJIT_FASTMEM
+endif
+
+ifeq ($(shell uname -m),arm64)
+	STATIC_LIBS += -lxbyak_aarch64
+endif
+ifeq ($(shell uname -m),aarch64)
+	STATIC_LIBS += -lxbyak_aarch64
+endif
+
+LDFLAGS := $(LIBDIRS:%=-L%) $(LIBS)
+vpath %.a $(LIBDIRS)
+.LIBPATTERNS := lib%.a
+
+ifeq ($(OS),Windows_NT)
+	LDFLAGS += -static -Wl,--stack,8388608 -fuse-ld=lld
+endif
+
+GIT_VERSION := $(shell git describe --abbrev=7 --always)
+ARGS := -D__LIBRETRO__ -DGIT_VERSION=\"$(GIT_VERSION)\"
+
+ifeq ($(OS),Windows_NT)
+	ARGS += -static -DWINDOWS
+	SHARED_EXT := .dll
+else
+	ifeq ($(shell uname -s),Darwin)
+		ARGS += -DMACOS
+		SHARED_EXT := .dylib
+	else
+		SHARED_EXT := .so
+	endif
+endif
+
+TARGET_LIB = $(NAME)$(SHARED_EXT)
+
+SRCS := $(shell find $(SRC_DIR) -name '*.c')
+SRCSCPP := $(shell find $(SRC_DIR) -name '*.cpp')
+SRCS := $(SRCS:$(SRC_DIR)/%=%)
+SRCSCPP := $(SRCSCPP:$(SRC_DIR)/%=%)
+
+# need to save this for clean
+BUILD_ROOT := $(BUILD_DIR)
+ifeq ($(DEBUG), 1)
+	BUILD_DIR := $(BUILD_DIR)/debug
+	CFLAGS += $(CFLAGS_DEBUG)
+else
+	BUILD_DIR := $(BUILD_DIR)/release
+	CFLAGS += $(CFLAGS_RELEASE)
+endif
+
+OBJS := $(SRCS:%.c=$(BUILD_DIR)/%.o)  $(SRCSCPP:%.cpp=$(BUILD_DIR)/%.o)
+DEPS := $(OBJS:.o=.d)
+
+$(BUILD_DIR)/$(TARGET_LIB): $(OBJS) $(STATIC_LIBS)
+	@echo linking $@...
+	@$(CXX) -shared -o $@ $(CFLAGS) $(CPPFLAGS) $(ARGS) $^ $(LDFLAGS)
+	@cp $@ $(TARGET_LIB)
+	@echo done
+
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+	@mkdir -p $(dir $@)
+	@echo $<
+	@$(CC) $(CPPFLAGS) $(CSTD) $(CFLAGS) $(ARGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
+	@mkdir -p $(dir $@)
+	@echo $<
+	@$(CXX) $(CPPFLAGS) $(CXXSTD) $(CFLAGS) $(ARGS) -c $< -o $@
+
+.PHONY: clean
+clean:
+	@echo clean...
+	@rm -rf $(BUILD_ROOT) $(TARGET_LIB)
+
+-include $(DEPS)
