@@ -31,3 +31,7 @@ perf*
 .DS_Store
 
 .clangd
+
+tanuki3ds*
+build-libretro
+!tanuki3ds_libretro.info
